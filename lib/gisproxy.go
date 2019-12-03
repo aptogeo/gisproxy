@@ -1,20 +1,44 @@
-package gisproxy
+package lib
 
 import (
 	"crypto/tls"
 	"encoding/base64"
+	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"regexp"
 	"strings"
 )
 
+// BeforeSend defines before send callback function
+type BeforeSend func(*GisInfo, *http.Request) (*http.Request, error)
+
+var (
+	reMapServer     = regexp.MustCompile("(?i)/services/(.+)/mapserver[/$]")
+	reFeatureServer = regexp.MustCompile("(?i)/services/(.+)/featureserver[/$]")
+	reImageServer   = regexp.MustCompile("(?i)/services/(.+)/imageserver[/$]")
+	reOWSType       = regexp.MustCompile("(?i)&?service=([^&]+)")
+	reOWSName       = regexp.MustCompile("(?i)&?layers=([^&]+)")
+)
+
 // GisProxy structure
 type GisProxy struct {
-	prefix string
-	client *http.Client
-	next   http.Handler
+	prefix         string
+	client         *http.Client
+	next           http.Handler
+	beforeSendFunc BeforeSend
+}
+
+// GisInfo structure
+type GisInfo struct {
+	ServerURL   string
+	ServerType  string
+	ServiceType string
+	ServiceName string
+}
+
+func (gi *GisInfo) String() string {
+	return fmt.Sprintf("GisInfo ServerURL=%v ServerType=%v ServiceType=%v ServiceName=%v", gi.ServerURL, gi.ServerType, gi.ServiceType, gi.ServiceName)
 }
 
 // NewGisProxy constructs GisProxy
@@ -48,6 +72,11 @@ func (gp *GisProxy) SetNextHandler(next http.Handler) {
 	gp.next = next
 }
 
+// SetBeforeSendFunc sets BeforeSend callback function
+func (gp *GisProxy) SetBeforeSendFunc(beforeSendFunc BeforeSend) {
+	gp.beforeSendFunc = beforeSendFunc
+}
+
 // ServeHTTP serves rest request
 func (gp *GisProxy) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	requestURL := request.URL.String()
@@ -68,6 +97,7 @@ func (gp *GisProxy) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 			return
 		}
 		url := string(decURL) + res[3]
+		gp.extractInfo(request)
 		err = gp.sendRequest(writer, request.Method, url, request.Body, request.Header)
 		if err != nil {
 			http.Error(writer, "Requesting server "+url+" error", http.StatusInternalServerError)
@@ -83,6 +113,40 @@ func (gp *GisProxy) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 	}
 }
 
+func (gp *GisProxy) extractInfo(req *http.Request) *GisInfo {
+	serverURL := ""
+	serverType := "unknown"
+	serviceType := "unknown"
+	serviceName := ""
+	lowerURL := strings.ToLower(req.URL.String())
+	path := req.URL.Path
+	rawQuery := req.URL.RawQuery
+	if res := reMapServer.FindStringSubmatch(path); res != nil {
+		serverURL = strings.Split(lowerURL, "/rest/services/")[0] + "/rest/services/"
+		serverType = "ArcGIS"
+		serviceType = "MapServer"
+		serviceName = res[1]
+	} else if res := reFeatureServer.FindStringSubmatch(path); res != nil {
+		serverURL = strings.Split(lowerURL, "/rest/services/")[0] + "/rest/services/"
+		serverType = "ArcGIS"
+		serviceType = "FeatureServer"
+		serviceName = res[1]
+	} else if res := reImageServer.FindStringSubmatch(path); res != nil {
+		serverURL = strings.Split(lowerURL, "/rest/services/")[0] + "/rest/services/"
+		serverType = "ArcGIS"
+		serviceType = "ImageServer"
+		serviceName = res[1]
+	} else if res1 := reOWSType.FindStringSubmatch(rawQuery); res1 != nil {
+		if res2 := reOWSName.FindStringSubmatch(rawQuery); res2 != nil {
+			serverURL = strings.Split(lowerURL, "?")[0]
+			serverType = strings.ToUpper(res1[1])
+			serviceType = serverType
+			serviceName = res2[1]
+		}
+	}
+	return &GisInfo{ServerURL: serverURL, ServerType: serverType, ServiceType: serviceType, ServiceName: serviceName}
+}
+
 func (gp *GisProxy) sendRequest(writer http.ResponseWriter, method string, url string, body io.Reader, header http.Header) error {
 	// Create request
 	req, err := http.NewRequest(method, url, body)
@@ -95,7 +159,15 @@ func (gp *GisProxy) sendRequest(writer http.ResponseWriter, method string, url s
 			req.Header.Add(n, h)
 		}
 	}
-	log.Println("method:", method, " | url:", url, " | body", body)
+	if gp.beforeSendFunc != nil {
+		// Extract info
+		gisInfo := gp.extractInfo(req)
+		// Call before send function
+		req, err = gp.beforeSendFunc(gisInfo, req)
+		if err != nil {
+
+		}
+	}
 	// Send
 	res, err := gp.client.Do(req)
 	if err != nil {
