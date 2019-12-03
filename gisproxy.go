@@ -1,9 +1,8 @@
-package main
+package gisproxy
 
 import (
 	"crypto/tls"
 	"encoding/base64"
-	"flag"
 	"io"
 	"log"
 	"net/http"
@@ -56,7 +55,7 @@ func (gp *GisProxy) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 	if idx != -1 {
 		requestURL = requestURL[idx+3:]
 	}
-	re := regexp.MustCompile("(" + gp.prefix + ")([^/\\?]+)(/.*)?")
+	re := regexp.MustCompile("(" + gp.prefix + ")([^/\\?]+)([/\\?]?.*)?")
 	res := re.FindStringSubmatch(requestURL)
 	if res != nil && res[2] != "" {
 		// replace '%2B' by '+', '%2F' by '/' and '%3D' by '='
@@ -96,6 +95,7 @@ func (gp *GisProxy) sendRequest(writer http.ResponseWriter, method string, url s
 			req.Header.Add(n, h)
 		}
 	}
+	log.Println("method:", method, " | url:", url, " | body", body)
 	// Send
 	res, err := gp.client.Do(req)
 	if err != nil {
@@ -123,15 +123,4 @@ func (gp *GisProxy) sendRequest(writer http.ResponseWriter, method string, url s
 		return err
 	}
 	return nil
-}
-
-func main() {
-	var listen string
-	var prefix string
-	flag.StringVar(&listen, "listen", "localhost:8181", "host:port to listen on")
-	flag.StringVar(&prefix, "prefix", "/", "prefix path")
-	log.Println("Listen:", listen, "Prefix:", prefix)
-	gisProxy := NewGisProxy(prefix)
-	http.HandleFunc(prefix, gisProxy.ServeHTTP)
-	http.ListenAndServe(listen, nil)
 }
