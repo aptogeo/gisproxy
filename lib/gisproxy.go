@@ -137,10 +137,10 @@ func (gp *GisProxy) extractInfo(req *http.Request) *GisInfo {
 		serviceType = "ImageServer"
 		serviceName = res[1]
 	} else if res1 := reOWSType.FindStringSubmatch(rawQuery); res1 != nil {
+		serverURL = strings.Split(lowerURL, "?")[0]
+		serverType = strings.ToUpper(res1[1])
+		serviceType = serverType
 		if res2 := reOWSName.FindStringSubmatch(rawQuery); res2 != nil {
-			serverURL = strings.Split(lowerURL, "?")[0]
-			serverType = strings.ToUpper(res1[1])
-			serviceType = serverType
 			serviceName = res2[1]
 		}
 	}
