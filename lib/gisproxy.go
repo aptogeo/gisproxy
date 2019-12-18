@@ -97,8 +97,7 @@ func (gp *GisProxy) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 			return
 		}
 		url := string(decURL) + res[3]
-		gp.extractInfo(request)
-		err = gp.sendRequest(writer, request.Method, url, request.Body, request.Header)
+		err = gp.SendRequest(writer, request.Method, url, request.Body, request.Header)
 		if err != nil {
 			http.Error(writer, "Requesting server "+url+" error", http.StatusInternalServerError)
 			return
@@ -147,7 +146,8 @@ func (gp *GisProxy) extractInfo(req *http.Request) *GisInfo {
 	return &GisInfo{ServerURL: serverURL, ServerType: serverType, ServiceType: serviceType, ServiceName: serviceName}
 }
 
-func (gp *GisProxy) sendRequest(writer http.ResponseWriter, method string, url string, body io.Reader, header http.Header) error {
+// SendRequest sends request
+func (gp *GisProxy) SendRequest(writer http.ResponseWriter, method string, url string, body io.Reader, header http.Header) error {
 	// Create request
 	req, err := http.NewRequest(method, url, body)
 	if err != nil {
