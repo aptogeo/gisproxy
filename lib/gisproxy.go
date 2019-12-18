@@ -85,10 +85,10 @@ func (gp *GisProxy) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 		requestURL = requestURL[idx+3:]
 	}
 	re := regexp.MustCompile("(" + gp.prefix + ")([^/\\?]+)([/\\?]?.*)?")
-	res := re.FindStringSubmatch(requestURL)
-	if res != nil && res[2] != "" {
+	submatch := re.FindStringSubmatch(requestURL)
+	if submatch != nil && submatch[2] != "" {
 		// replace '%2B' by '+', '%2F' by '/' and '%3D' by '='
-		b64URL := strings.ReplaceAll(res[2], "%2B", "+")
+		b64URL := strings.ReplaceAll(submatch[2], "%2B", "+")
 		b64URL = strings.ReplaceAll(b64URL, "%2F", "/")
 		b64URL = strings.ReplaceAll(b64URL, "%3D", "=")
 		decURL, err := base64.StdEncoding.DecodeString(b64URL)
@@ -96,10 +96,15 @@ func (gp *GisProxy) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 			http.Error(writer, "Base64 decoding error for "+b64URL, http.StatusInternalServerError)
 			return
 		}
-		url := string(decURL) + res[3]
-		err = gp.SendRequest(writer, request.Method, url, request.Body, request.Header)
+		url := string(decURL) + submatch[3]
+		res, err := gp.SendRequest(request.Method, url, request.Body, request.Header)
 		if err != nil {
 			http.Error(writer, "Requesting server "+url+" error", http.StatusInternalServerError)
+			return
+		}
+		gp.write(writer, res)
+		if err != nil {
+			http.Error(writer, "Writing response error", http.StatusInternalServerError)
 			return
 		}
 	} else {
@@ -147,11 +152,11 @@ func (gp *GisProxy) extractInfo(req *http.Request) *GisInfo {
 }
 
 // SendRequest sends request
-func (gp *GisProxy) SendRequest(writer http.ResponseWriter, method string, url string, body io.Reader, header http.Header) error {
+func (gp *GisProxy) SendRequest(method string, url string, body io.Reader, header http.Header) (*http.Response, error) {
 	// Create request
 	req, err := http.NewRequest(method, url, body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// Add request header
 	for n, h := range header {
@@ -169,10 +174,10 @@ func (gp *GisProxy) SendRequest(writer http.ResponseWriter, method string, url s
 		}
 	}
 	// Send
-	res, err := gp.client.Do(req)
-	if err != nil {
-		return err
-	}
+	return gp.client.Do(req)
+}
+
+func (gp *GisProxy) write(writer http.ResponseWriter, res *http.Response) error {
 	// Add response header
 	for h, v := range res.Header {
 		for _, v := range v {
@@ -180,17 +185,13 @@ func (gp *GisProxy) SendRequest(writer http.ResponseWriter, method string, url s
 		}
 	}
 	// Allow access origin
-	origin := header.Get("Origin")
-	if origin == "" {
-		origin = "*"
-	}
-	writer.Header().Set("Access-Control-Allow-Origin", origin)
+	writer.Header().Set("Access-Control-Allow-Origin", "*")
 	writer.Header().Set("Access-Control-Allow-Credentials", "true")
 	writer.Header().Set("Access-Control-Allow-Methods", "GET, PUT, POST, HEAD, TRACE, DELETE, PATCH, COPY, HEAD, LINK, OPTIONS")
 	// Set status
 	writer.WriteHeader(res.StatusCode)
 	// Copy body
-	_, err = io.Copy(writer, res.Body)
+	_, err := io.Copy(writer, res.Body)
 	if err != nil {
 		return err
 	}
