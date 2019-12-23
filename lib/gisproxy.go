@@ -170,7 +170,7 @@ func (gp *GisProxy) SendRequest(method string, url string, body io.Reader, heade
 		// Call before send function
 		req, err = gp.beforeSendFunc(gisInfo, req)
 		if err != nil {
-
+			return nil, err
 		}
 	}
 	// Send
