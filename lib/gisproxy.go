@@ -98,7 +98,7 @@ func (gp *GisProxy) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 			return
 		}
 		url := string(decURL) + submatch[3]
-		res, err := gp.SendRequest(request.Method, url, request.Body, request.Header)
+		res, err := gp.SendRequestWithContext(request.Context(), request.Method, url, request.Body, request.Header)
 		if err != nil {
 			http.Error(writer, "Requesting server "+url+" error", http.StatusInternalServerError)
 			return
