@@ -1,6 +1,7 @@
 package lib
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"fmt"
@@ -153,8 +154,13 @@ func (gp *GisProxy) extractInfo(req *http.Request) *GisInfo {
 
 // SendRequest sends request
 func (gp *GisProxy) SendRequest(method string, url string, body io.Reader, header http.Header) (*http.Response, error) {
+	return gp.SendRequestWithContext(context.Background(), method, url, body, header)
+}
+
+// SendRequestWithContext sends request with context
+func (gp *GisProxy) SendRequestWithContext(ctx context.Context, method string, url string, body io.Reader, header http.Header) (*http.Response, error) {
 	// Create request
-	req, err := http.NewRequest(method, url, body)
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
 		return nil, err
 	}
