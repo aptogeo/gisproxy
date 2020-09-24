@@ -13,6 +13,17 @@ import (
 	"time"
 )
 
+// StatusError struct
+type StatusError struct {
+	Cause error
+	Code  int
+}
+
+// Error implements the error interface
+func (e StatusError) Error() string {
+	return e.Cause.Error()
+}
+
 // BeforeSend defines before send callback function
 type BeforeSend func(*GisInfo, *http.Request) (*http.Request, error)
 
@@ -113,7 +124,12 @@ func (gp *GisProxy) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 		url := string(decURL) + submatch[3]
 		res, err := gp.SendRequestWithContext(request.Context(), request.Method, url, request.Body, request.Header)
 		if err != nil {
-			http.Error(writer, "Requesting server "+url+" error", http.StatusInternalServerError)
+			statusError, valid := err.(StatusError)
+			if valid {
+				http.Error(writer, "Requesting server "+url+" error: "+err.Error(), statusError.Code)
+			} else {
+				http.Error(writer, "Requesting server "+url+" error: "+err.Error(), http.StatusInternalServerError)
+			}
 			return
 		}
 		gp.write(writer, res)
