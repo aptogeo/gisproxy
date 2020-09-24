@@ -19,6 +19,11 @@ type StatusError struct {
 	Code  int
 }
 
+// NewStatusError constructs StatusError
+func NewStatusError(cause error, code int) *StatusError {
+	return &StatusError{Cause: cause, Code: code}
+}
+
 // Error implements the error interface
 func (e StatusError) Error() string {
 	return e.Cause.Error()
@@ -124,7 +129,7 @@ func (gp *GisProxy) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 		url := string(decURL) + submatch[3]
 		res, err := gp.SendRequestWithContext(request.Context(), request.Method, url, request.Body, request.Header)
 		if err != nil {
-			statusError, valid := err.(StatusError)
+			statusError, valid := err.(*StatusError)
 			if valid {
 				http.Error(writer, "Requesting server "+url+" error: "+err.Error(), statusError.Code)
 			} else {
