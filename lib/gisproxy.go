@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"net"
 	"net/http"
 	"regexp"
@@ -122,6 +123,7 @@ func (gp *GisProxy) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 			requestURL += string(bodyBytes)
 		}
 	}
+	log.Println(requestURL)
 	re := regexp.MustCompile("(" + gp.prefix + ")([^/\\?]+)([/\\?]?.*)?")
 	submatch := re.FindStringSubmatch(requestURL)
 	if submatch != nil && submatch[2] != "" {
