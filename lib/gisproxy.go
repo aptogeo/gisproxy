@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net"
 	"net/http"
 	"regexp"
@@ -33,6 +34,7 @@ func (e StatusError) Error() string {
 type BeforeSend func(*GisInfo, *http.Request) (*http.Request, error)
 
 var (
+	reForm          = regexp.MustCompile("(?i)[+-/]form($|[+-;]")
 	reMapServer     = regexp.MustCompile("(?i)/services/(.+)/mapserver[/$]")
 	reFeatureServer = regexp.MustCompile("(?i)/services/(.+)/featureserver[/$]")
 	reImageServer   = regexp.MustCompile("(?i)/services/(.+)/imageserver[/$]")
@@ -113,6 +115,12 @@ func (gp *GisProxy) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 	idx := strings.Index(requestURL, "://")
 	if idx != -1 {
 		requestURL = requestURL[idx+3:]
+	}
+	if request.Method == "POST" && reForm.MatchString(request.Header.Get("Content-type")) {
+		bodyBytes, err := ioutil.ReadAll(request.Body)
+		if err != nil {
+			requestURL += string(bodyBytes)
+		}
 	}
 	re := regexp.MustCompile("(" + gp.prefix + ")([^/\\?]+)([/\\?]?.*)?")
 	submatch := re.FindStringSubmatch(requestURL)
