@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"log"
 	"net"
 	"net/http"
 	"regexp"
@@ -117,15 +116,10 @@ func (gp *GisProxy) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 	if idx != -1 {
 		requestURL = requestURL[idx+3:]
 	}
-	log.Println(request.Method)
-	log.Println(request.Header.Get("Content-type"))
 	if request.Method == "POST" && reForm.MatchString(request.Header.Get("Content-type")) {
 		bodyBytes, err := ioutil.ReadAll(request.Body)
-		if err != nil {
+		if err == nil {
 			requestURL += string(bodyBytes)
-			log.Println(requestURL)
-		} else {
-			log.Println(err.Error())
 		}
 	}
 	re := regexp.MustCompile("(" + gp.prefix + ")([^/\\?]+)([/\\?]?.*)?")
