@@ -34,7 +34,7 @@ func (e StatusError) Error() string {
 type BeforeSend func(*GisInfo, *http.Request) (*http.Request, error)
 
 var (
-	reForm          = regexp.MustCompile("(?i)[+-/]form($|[+-;]")
+	reForm          = regexp.MustCompile("(?i)[+-/]form($|[+-;])")
 	reMapServer     = regexp.MustCompile("(?i)/services/(.+)/mapserver[/$]")
 	reFeatureServer = regexp.MustCompile("(?i)/services/(.+)/featureserver[/$]")
 	reImageServer   = regexp.MustCompile("(?i)/services/(.+)/imageserver[/$]")
