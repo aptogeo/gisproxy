@@ -120,7 +120,7 @@ func (gp *GisProxy) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 	if request.Method == "POST" && reForm.MatchString(request.Header.Get("Content-type")) {
 		bodyBytes, err := ioutil.ReadAll(request.Body)
 		if err == nil {
-			requestURL += string(bodyBytes)
+			requestURL += "?" + string(bodyBytes)
 		}
 	}
 	log.Println(requestURL)
