@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"net"
 	"net/http"
 	"regexp"
@@ -39,7 +40,7 @@ var (
 	reFeatureServer = regexp.MustCompile("(?i)/services/(.+)/featureserver[/$]")
 	reImageServer   = regexp.MustCompile("(?i)/services/(.+)/imageserver[/$]")
 	reOWSType       = regexp.MustCompile("(?i)&?service=([^&]+)")
-	reOWSName       = regexp.MustCompile("(?i)&?layers=([^&]+)")
+	reOWSName       = regexp.MustCompile("(?i)&?layers?=([^&]+)")
 )
 
 // GisProxy structure
@@ -116,10 +117,15 @@ func (gp *GisProxy) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 	if idx != -1 {
 		requestURL = requestURL[idx+3:]
 	}
+	log.Println(request.Method)
+	log.Println(request.Header.Get("Content-type"))
 	if request.Method == "POST" && reForm.MatchString(request.Header.Get("Content-type")) {
 		bodyBytes, err := ioutil.ReadAll(request.Body)
 		if err != nil {
 			requestURL += string(bodyBytes)
+			log.Println(requestURL)
+		} else {
+			log.Println(err.Error())
 		}
 	}
 	re := regexp.MustCompile("(" + gp.prefix + ")([^/\\?]+)([/\\?]?.*)?")
