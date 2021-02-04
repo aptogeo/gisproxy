@@ -44,10 +44,11 @@ var (
 
 // GisProxy structure
 type GisProxy struct {
-	prefix         string
-	client         *http.Client
-	next           http.Handler
-	beforeSendFunc BeforeSend
+	prefix           string
+	client           *http.Client
+	next             http.Handler
+	beforeSendFunc   BeforeSend
+	allowCrossOrigin bool
 }
 
 // GisInfo structure
@@ -63,9 +64,10 @@ func (gi *GisInfo) String() string {
 }
 
 // NewGisProxy constructs GisProxy
-func NewGisProxy(prefix string) *GisProxy {
+func NewGisProxy(prefix string, allowCrossOrigin bool) *GisProxy {
 	gp := new(GisProxy)
 	gp.SetPrefix(prefix)
+	gp.SetAllowCrossOrigin(allowCrossOrigin)
 	// create http client
 	gp.client = &http.Client{}
 	gp.client.Transport = &http.Transport{
@@ -99,6 +101,11 @@ func (gp *GisProxy) SetPrefix(prefix string) {
 	}
 }
 
+// SetAllowCrossOrigin sets forward
+func (gp *GisProxy) SetAllowCrossOrigin(allowCrossOrigin bool) {
+	gp.allowCrossOrigin = allowCrossOrigin
+}
+
 // SetNextHandler sets next handler for middleware use
 func (gp *GisProxy) SetNextHandler(next http.Handler) {
 	gp.next = next
@@ -115,12 +122,6 @@ func (gp *GisProxy) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 	idx := strings.Index(requestURL, "://")
 	if idx != -1 {
 		requestURL = requestURL[idx+3:]
-	}
-	if request.Method == "POST" && reForm.MatchString(request.Header.Get("Content-type")) {
-		bodyBytes, err := ioutil.ReadAll(request.Body)
-		if err == nil {
-			requestURL += "?" + string(bodyBytes)
-		}
 	}
 	re := regexp.MustCompile("(" + gp.prefix + ")([^/\\?]+)([/\\?]?.*)?")
 	submatch := re.FindStringSubmatch(requestURL)
@@ -168,6 +169,18 @@ func (gp *GisProxy) extractInfo(req *http.Request) *GisInfo {
 	lowerURL := strings.ToLower(req.URL.String())
 	path := req.URL.Path
 	rawQuery := req.URL.RawQuery
+	if req.Method == "POST" && reForm.MatchString(req.Header.Get("Content-type")) {
+		var formBody string
+		bodyBytes, err := ioutil.ReadAll(req.Body)
+		if err == nil {
+			formBody = string(bodyBytes)
+		}
+		if rawQuery == "" {
+			rawQuery += "?" + formBody
+		} else {
+			rawQuery += "&" + formBody
+		}
+	}
 	if res := reMapServer.FindStringSubmatch(path); res != nil {
 		serverURL = strings.Split(lowerURL, "/rest/services/")[0] + "/rest/services/"
 		serverType = "ArcGIS"
@@ -232,10 +245,12 @@ func (gp *GisProxy) write(writer http.ResponseWriter, res *http.Response) error 
 			writer.Header().Add(h, v)
 		}
 	}
-	// Allow access origin
-	writer.Header().Set("Access-Control-Allow-Origin", "*")
-	writer.Header().Set("Access-Control-Allow-Credentials", "true")
-	writer.Header().Set("Access-Control-Allow-Methods", "GET, PUT, POST, HEAD, TRACE, DELETE, PATCH, COPY, HEAD, LINK, OPTIONS")
+	if gp.allowCrossOrigin {
+		// Allow access origin
+		writer.Header().Set("Access-Control-Allow-Origin", "*")
+		writer.Header().Set("Access-Control-Allow-Credentials", "true")
+		writer.Header().Set("Access-Control-Allow-Methods", "GET, PUT, POST, HEAD, TRACE, DELETE, PATCH, COPY, HEAD, LINK, OPTIONS")
+	}
 	// Set status
 	writer.WriteHeader(res.StatusCode)
 	// Copy body
