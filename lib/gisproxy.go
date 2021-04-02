@@ -170,15 +170,18 @@ func (gp *GisProxy) extractInfo(req *http.Request) *GisInfo {
 	path := req.URL.Path
 	rawQuery := req.URL.RawQuery
 	if req.Method == "POST" && reForm.MatchString(req.Header.Get("Content-type")) {
-		var formBody string
-		bodyBytes, err := ioutil.ReadAll(req.Body)
+		body, err := req.GetBody()
 		if err == nil {
-			formBody = string(bodyBytes)
-		}
-		if rawQuery == "" {
-			rawQuery += "?" + formBody
-		} else {
-			rawQuery += "&" + formBody
+			var formBody string
+			bodyBytes, err := ioutil.ReadAll(body)
+			if err == nil {
+				formBody = string(bodyBytes)
+			}
+			if rawQuery == "" {
+				rawQuery += "?" + formBody
+			} else {
+				rawQuery += "&" + formBody
+			}
 		}
 	}
 	if res := reMapServer.FindStringSubmatch(path); res != nil {
