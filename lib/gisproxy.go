@@ -1,6 +1,7 @@
 package lib
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/base64"
@@ -161,7 +162,7 @@ func (gp *GisProxy) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 	}
 }
 
-func (gp *GisProxy) extractInfo(req *http.Request) *GisInfo {
+func (gp *GisProxy) extractInfo(req *http.Request, formBody string) *GisInfo {
 	serverURL := ""
 	serverType := "unknown"
 	serviceType := "unknown"
@@ -169,19 +170,11 @@ func (gp *GisProxy) extractInfo(req *http.Request) *GisInfo {
 	lowerURL := strings.ToLower(req.URL.String())
 	path := req.URL.Path
 	rawQuery := req.URL.RawQuery
-	if req.Method == "POST" && reForm.MatchString(req.Header.Get("Content-type")) {
-		body, err := req.GetBody()
-		if err == nil {
-			var formBody string
-			bodyBytes, err := ioutil.ReadAll(body)
-			if err == nil {
-				formBody = string(bodyBytes)
-			}
-			if rawQuery == "" {
-				rawQuery += "?" + formBody
-			} else {
-				rawQuery += "&" + formBody
-			}
+	if formBody != "" {
+		if rawQuery == "" {
+			rawQuery += "?" + formBody
+		} else {
+			rawQuery += "&" + formBody
 		}
 	}
 	if res := reMapServer.FindStringSubmatch(path); res != nil {
@@ -217,7 +210,17 @@ func (gp *GisProxy) SendRequest(method string, url string, body io.Reader, heade
 
 // SendRequestWithContext sends request with context
 func (gp *GisProxy) SendRequestWithContext(ctx context.Context, method string, url string, body io.Reader, header http.Header) (*http.Response, error) {
+	var formBody string
+	if method == "POST" && reForm.MatchString(header.Get("Content-type")) {
+		bodyBytes, err := ioutil.ReadAll(body)
+		if err == nil {
+			formBody = string(bodyBytes)
+		}
+	}
 	// Create request
+	if formBody != "" {
+		body = bytes.NewBuffer([]byte(formBody))
+	}
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
 		return nil, err
@@ -230,7 +233,7 @@ func (gp *GisProxy) SendRequestWithContext(ctx context.Context, method string, u
 	}
 	if gp.beforeSendFunc != nil {
 		// Extract info
-		gisInfo := gp.extractInfo(req)
+		gisInfo := gp.extractInfo(req, formBody)
 		// Call before send function
 		req, err = gp.beforeSendFunc(gisInfo, req)
 		if err != nil {
