@@ -5,51 +5,82 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
 )
 
+// The contextKey type is unexported to prevent collisions with context keys defined in
+// other packages
+type contextKey string
+
+// GisProxyFromContext retrives GisProxy from context
+func GisProxyFromContext(ctx context.Context) *GisProxy {
+	v := ctx.Value(contextKey("GisProxy"))
+	if v == nil {
+		return nil
+	}
+	return v.(*GisProxy)
+}
+
+// GisInfoFromContext retrives GisInfo from context
+func GisInfoFromContext(ctx context.Context) *GisInfo {
+	v := ctx.Value(contextKey("GisInfo"))
+	if v == nil {
+		return nil
+	}
+	return v.(*GisInfo)
+}
+
 // StatusError struct
 type StatusError struct {
-	Cause error
-	Code  int
+	Message string
+	Code    int
 }
 
 // NewStatusError constructs StatusError
-func NewStatusError(cause error, code int) *StatusError {
-	return &StatusError{Cause: cause, Code: code}
+func NewStatusError(message string, code int) *StatusError {
+	return &StatusError{Message: message, Code: code}
 }
 
 // Error implements the error interface
-func (e StatusError) Error() string {
-	return e.Cause.Error()
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("%v (%v)", e.Message, e.Code)
 }
 
 // BeforeSend defines before send callback function
-type BeforeSend func(*GisInfo, *http.Request) (*http.Request, error)
+type BeforeSend func(http.ResponseWriter, *http.Request) error
+
+// AfterReceive defines after receive callback function
+type AfterReceive func(http.ResponseWriter, *http.Response) error
 
 var (
-	reForm          = regexp.MustCompile("(?i)[+-/]form($|[+-;])")
-	reMapServer     = regexp.MustCompile("(?i)/services/(.+)/mapserver[/$]")
-	reFeatureServer = regexp.MustCompile("(?i)/services/(.+)/featureserver[/$]")
-	reImageServer   = regexp.MustCompile("(?i)/services/(.+)/imageserver[/$]")
-	reOWSType       = regexp.MustCompile("(?i)&?service=([^&]+)")
-	reOWSName       = regexp.MustCompile("(?i)&?layers?=([^&]+)")
+	reMapServer     = regexp.MustCompile("(?i)/services/(.+)/mapserver/?")
+	reFeatureServer = regexp.MustCompile("(?i)/services/(.+)/featureserver/?")
+	reImageServer   = regexp.MustCompile("(?i)/services/(.+)/imageserver/?")
 )
 
 // GisProxy structure
 type GisProxy struct {
-	prefix           string
+	server           *http.Server
+	serverMux        *http.ServeMux
 	client           *http.Client
+	Prefix           string
+	AllowCrossOrigin bool
+	https            bool
+	crtfile          string
+	keyfile          string
 	next             http.Handler
 	beforeSendFunc   BeforeSend
-	allowCrossOrigin bool
+	afterReceiveFunc AfterReceive
 }
 
 // GisInfo structure
@@ -65,12 +96,19 @@ func (gi *GisInfo) String() string {
 }
 
 // NewGisProxy constructs GisProxy
-func NewGisProxy(prefix string, allowCrossOrigin bool) *GisProxy {
+func NewGisProxy(listen string, prefix string, allowCrossOrigin bool) *GisProxy {
 	gp := new(GisProxy)
-	gp.SetPrefix(prefix)
-	gp.SetAllowCrossOrigin(allowCrossOrigin)
+	gp.serverMux = http.NewServeMux()
+	gp.server = &http.Server{Addr: listen, Handler: gp.serverMux}
+	gp.Prefix = prefix
+	gp.AllowCrossOrigin = allowCrossOrigin
+	gp.https = false
 	// create http client
-	gp.client = &http.Client{}
+	gp.client = &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	gp.client.Transport = &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
@@ -88,23 +126,34 @@ func NewGisProxy(prefix string, allowCrossOrigin bool) *GisProxy {
 	return gp
 }
 
-// SetPrefix sets prefix
-func (gp *GisProxy) SetPrefix(prefix string) {
-	gp.prefix = prefix
-	if gp.prefix == "" {
-		gp.prefix = "/"
-	}
-	if !strings.HasPrefix(gp.prefix, "/") {
-		gp.prefix = "/" + gp.prefix
-	}
-	if !strings.HasSuffix(gp.prefix, "/") {
-		gp.prefix = gp.prefix + "/"
-	}
+// UseHttps uses Https with certificate
+func (gp *GisProxy) UseHttps(crtfile string, keyfile string) {
+	gp.https = true
+	gp.crtfile = crtfile
+	gp.keyfile = keyfile
 }
 
-// SetAllowCrossOrigin sets forward
-func (gp *GisProxy) SetAllowCrossOrigin(allowCrossOrigin bool) {
-	gp.allowCrossOrigin = allowCrossOrigin
+func (rp *GisProxy) Start() error {
+	log.Println("Start server")
+	log.Println("Listen=", rp.server.Addr)
+	log.Println("Prefix=", rp.Prefix)
+	log.Println("AllowCrossOrigin=", rp.AllowCrossOrigin)
+	log.Println("https=", rp.https)
+	if rp.https {
+		log.Println("crtfile=", rp.crtfile)
+		log.Println("keyfile=", rp.keyfile)
+	}
+	rp.serverMux.HandleFunc("/", rp.serveHTTP)
+	if rp.https {
+		rp.server.ListenAndServeTLS(rp.crtfile, rp.keyfile)
+	}
+	return rp.server.ListenAndServe()
+}
+
+func (gp *GisProxy) Stop(timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return gp.server.Shutdown(ctx)
 }
 
 // SetNextHandler sets next handler for middleware use
@@ -117,66 +166,81 @@ func (gp *GisProxy) SetBeforeSendFunc(beforeSendFunc BeforeSend) {
 	gp.beforeSendFunc = beforeSendFunc
 }
 
-// ServeHTTP serves rest request
-func (gp *GisProxy) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
-	requestURL := request.URL.String()
-	idx := strings.Index(requestURL, "://")
-	if idx != -1 {
-		requestURL = requestURL[idx+3:]
+// SetAfterReceiveFunc sets AfterReceive callback function
+func (gp *GisProxy) SetAfterReceiveFunc(afterReceiveFunc AfterReceive) {
+	gp.afterReceiveFunc = afterReceiveFunc
+}
+
+// serveHTTP serves rest request
+func (gp *GisProxy) serveHTTP(writer http.ResponseWriter, incomingRequest *http.Request) {
+	if gp.Prefix == "" {
+		gp.Prefix = "/"
 	}
-	re := regexp.MustCompile("(" + gp.prefix + ")([^/\\?]+)([/\\?]?.*)?")
-	submatch := re.FindStringSubmatch(requestURL)
+	if !strings.HasPrefix(gp.Prefix, "/") {
+		gp.Prefix = "/" + gp.Prefix
+	}
+	if !strings.HasSuffix(gp.Prefix, "/") {
+		gp.Prefix = gp.Prefix + "/"
+	}
+	if forwardUrl, err := gp.ComputeForwardUrl(incomingRequest); err != nil {
+		if gp.next != nil {
+			gp.next.ServeHTTP(writer, incomingRequest)
+		} else {
+			gp.writeError(writer, incomingRequest, err)
+			return
+		}
+	} else {
+		// Set GisProxy to context
+		ctx := context.WithValue(incomingRequest.Context(), contextKey("GisProxy"), gp)
+		// Set GisInfo to context
+		ctx = context.WithValue(ctx, contextKey("GisInfo"), gp.extractInfo(incomingRequest, forwardUrl))
+		response, err := gp.sendRequestWithContext(ctx, writer, incomingRequest.Method, forwardUrl, incomingRequest.Body, incomingRequest.Header)
+		if response != nil && response.Body != nil {
+			defer response.Body.Close()
+		}
+		if err != nil {
+			gp.writeError(writer, incomingRequest, err)
+			return
+		}
+		gp.writeResponse(writer, incomingRequest, response)
+	}
+}
+
+// ComputeRewriteUrl computes forward url
+func (gp *GisProxy) ComputeForwardUrl(incomingRequest *http.Request) (*url.URL, error) {
+	incomingRequestURL := incomingRequest.URL.String()
+	idx := strings.Index(incomingRequestURL, "://")
+	if idx != -1 && idx < 10 {
+		incomingRequestURL = incomingRequestURL[idx+3:]
+	}
+	re := regexp.MustCompile("(" + gp.Prefix + ")([^/\\?]+)([/\\?]?.*)?")
+	submatch := re.FindStringSubmatch(incomingRequestURL)
 	if submatch != nil && submatch[2] != "" {
 		// replace '%2B' by '+', '%2F' by '/' and '%3D' by '='
 		b64URL := strings.ReplaceAll(submatch[2], "%2B", "+")
 		b64URL = strings.ReplaceAll(b64URL, "%2F", "/")
 		b64URL = strings.ReplaceAll(b64URL, "%3D", "=")
-		decURL, err := base64.StdEncoding.DecodeString(b64URL)
-		if err != nil {
-			http.Error(writer, "Base64 decoding error for "+b64URL, http.StatusInternalServerError)
-			return
-		}
-		url := string(decURL) + submatch[3]
-		res, err := gp.SendRequestWithContext(request.Context(), request.Method, url, request.Body, request.Header)
-		if err != nil {
-			statusError, valid := err.(*StatusError)
-			if valid {
-				http.Error(writer, "Requesting server "+url+" error: "+err.Error(), statusError.Code)
+		if decURL, err := base64.StdEncoding.DecodeString(b64URL); err != nil {
+			return nil, err
+		} else {
+			if forwardUrl, err := url.Parse(string(decURL) + submatch[3]); err != nil {
+				return nil, err
 			} else {
-				http.Error(writer, "Requesting server "+url+" error: "+err.Error(), http.StatusInternalServerError)
+				return forwardUrl, nil
 			}
-			return
-		}
-		gp.write(writer, res)
-		if err != nil {
-			http.Error(writer, "Writing response error", http.StatusInternalServerError)
-			return
 		}
 	} else {
-		if gp.next != nil {
-			gp.next.ServeHTTP(writer, request)
-		} else {
-			http.Error(writer, "Request isn't GIS Proxy request", http.StatusInternalServerError)
-			return
-		}
+		return nil, errors.New("Prefix " + gp.Prefix + " not found in request")
 	}
 }
 
-func (gp *GisProxy) extractInfo(req *http.Request, formBody string) *GisInfo {
+func (gp *GisProxy) extractInfo(request *http.Request, forwardUrl *url.URL) *GisInfo {
 	serverURL := ""
 	serverType := "unknown"
 	serviceType := "unknown"
 	serviceName := ""
-	lowerURL := strings.ToLower(req.URL.String())
-	path := req.URL.Path
-	rawQuery := req.URL.RawQuery
-	if formBody != "" {
-		if rawQuery == "" {
-			rawQuery += "?" + formBody
-		} else {
-			rawQuery += "&" + formBody
-		}
-	}
+	lowerURL := strings.ToLower(forwardUrl.String())
+	path := forwardUrl.Path
 	if res := reMapServer.FindStringSubmatch(path); res != nil {
 		serverURL = strings.Split(lowerURL, "/rest/services/")[0] + "/rest/services/"
 		serverType = "ArcGIS"
@@ -192,77 +256,150 @@ func (gp *GisProxy) extractInfo(req *http.Request, formBody string) *GisInfo {
 		serverType = "ArcGIS"
 		serviceType = "ImageServer"
 		serviceName = res[1]
-	} else if res1 := reOWSType.FindStringSubmatch(rawQuery); res1 != nil {
+	} else {
+		if request.Method == "PUT" || request.Method == "POST" || request.Method == "PATCH" {
+			if strings.Contains(strings.ToLower(request.Header.Get("Content-Type")), "application/x-www-form-urlencoded") ||
+				strings.Contains(strings.ToLower(request.Header.Get("Content-Type")), "multipart/form-data") {
+				if bodyByte, err := ioutil.ReadAll(request.Body); err == nil {
+					request.Body = ioutil.NopCloser(bytes.NewBuffer(bodyByte))
+					request.ParseMultipartForm(2 << 20)
+					request.Body = ioutil.NopCloser(bytes.NewBuffer(bodyByte))
+				}
+			}
+		}
 		serverURL = strings.Split(lowerURL, "?")[0]
-		serverType = strings.ToUpper(res1[1])
-		serviceType = serverType
-		if res2 := reOWSName.FindStringSubmatch(rawQuery); res2 != nil {
-			serviceName = res2[1]
+		for key, values := range request.Form {
+			lowerKey := strings.ToLower(key)
+			if lowerKey == "service" {
+				if len(values) > 0 {
+					serverType = strings.ToUpper(values[0])
+					serviceType = serverType
+				}
+			}
+			if serverType == "WMS" {
+				if lowerKey == "layers" {
+					serviceName = strings.Join(values, ",")
+				} else if lowerKey == "query_layers" {
+					serviceName = strings.Join(values, ",")
+				}
+			} else if serverType == "WMTS" {
+				if lowerKey == "layer" {
+					serviceName = strings.Join(values, ",")
+				}
+			} else if serverType == "WFS" {
+				if lowerKey == "typenames" {
+					serviceName = strings.Join(values, ",")
+				} else if lowerKey == "typename" {
+					serviceName = strings.Join(values, ",")
+				}
+			}
 		}
 	}
 	return &GisInfo{ServerURL: serverURL, ServerType: serverType, ServiceType: serviceType, ServiceName: serviceName}
 }
 
-// SendRequest sends request
-func (gp *GisProxy) SendRequest(method string, url string, body io.Reader, header http.Header) (*http.Response, error) {
-	return gp.SendRequestWithContext(context.Background(), method, url, body, header)
-}
-
 // SendRequestWithContext sends request with context
-func (gp *GisProxy) SendRequestWithContext(ctx context.Context, method string, url string, body io.Reader, header http.Header) (*http.Response, error) {
-	var formBody string
-	if method == "POST" && reForm.MatchString(header.Get("Content-type")) {
-		bodyBytes, err := ioutil.ReadAll(body)
-		if err == nil {
-			formBody = string(bodyBytes)
-		}
-	}
+func (gp *GisProxy) sendRequestWithContext(ctx context.Context, writer http.ResponseWriter, method string, url *url.URL, body io.Reader, header http.Header) (*http.Response, error) {
 	// Create request
-	if formBody != "" {
-		body = bytes.NewBuffer([]byte(formBody))
+	var request *http.Request
+	var err error
+	if method == "PUT" || method == "POST" || method == "PATCH" {
+		request, err = http.NewRequestWithContext(ctx, method, url.String(), body)
+	} else {
+		request, err = http.NewRequestWithContext(ctx, method, url.String(), nil)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
+		log.Println("New request error")
 		return nil, err
 	}
 	// Add request header
-	for n, h := range header {
-		for _, h := range h {
-			req.Header.Add(n, h)
+	for h, vs := range header {
+		for _, v := range vs {
+			request.Header.Add(h, v)
 		}
 	}
 	if gp.beforeSendFunc != nil {
-		// Extract info
-		gisInfo := gp.extractInfo(req, formBody)
 		// Call before send function
-		req, err = gp.beforeSendFunc(gisInfo, req)
+		err := gp.beforeSendFunc(writer, request)
 		if err != nil {
+			statusError, valid := err.(*StatusError)
+			if !valid || statusError.Code != 302 {
+				log.Println("Before send error", err, request.URL)
+			}
 			return nil, err
 		}
 	}
 	// Send
-	return gp.client.Do(req)
+	return gp.client.Do(request)
 }
 
-func (gp *GisProxy) write(writer http.ResponseWriter, res *http.Response) error {
+// writeResponse writes response
+func (gp *GisProxy) writeResponse(writer http.ResponseWriter, request *http.Request, response *http.Response) {
+	if gp.afterReceiveFunc != nil {
+		// Call after receive function
+		if err := gp.afterReceiveFunc(writer, response); err != nil {
+			statusError, valid := err.(*StatusError)
+			if !valid || statusError.Code != 302 {
+				log.Println("After receive error", err, request.URL)
+			}
+			gp.writeError(writer, request, err)
+			return
+		}
+	}
+	if response.StatusCode == 302 {
+		location, _ := response.Location()
+		gp.writeError(writer, request, NewStatusError(location.String(), 302))
+		return
+	}
+	// Write header
+	gp.writeResponseHeader(writer, request, response.Header)
+	// Set status
+	writer.WriteHeader(response.StatusCode)
+	// Copy body
+	if _, err := io.Copy(writer, response.Body); err != nil {
+		log.Println("Copy response error")
+		gp.writeError(writer, request, err)
+	}
+}
+
+// writeResponse writes error
+func (gp *GisProxy) writeError(writer http.ResponseWriter, request *http.Request, err error) {
+	gp.writeResponseHeader(writer, request, nil)
+	statusError, valid := err.(*StatusError)
+	if valid {
+		if statusError.Code == 200 {
+			writer.Write([]byte(statusError.Message))
+		} else if statusError.Code == 302 {
+			writer.Header().Set("Location", statusError.Message)
+			writer.WriteHeader(302)
+		} else {
+			log.Println("Error", http.StatusInternalServerError, err)
+			http.Error(writer, err.Error(), statusError.Code)
+		}
+	} else {
+		log.Println("Error", http.StatusInternalServerError, err)
+		http.Error(writer, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// writeResponseHeader writes response header
+func (gp *GisProxy) writeResponseHeader(writer http.ResponseWriter, request *http.Request, header http.Header) {
 	// Add response header
-	for h, v := range res.Header {
-		for _, v := range v {
+	for h, vs := range header {
+		for _, v := range vs {
 			writer.Header().Add(h, v)
 		}
 	}
-	if gp.allowCrossOrigin {
+	if gp.AllowCrossOrigin {
 		// Allow access origin
-		writer.Header().Set("Access-Control-Allow-Origin", "*")
-		writer.Header().Set("Access-Control-Allow-Credentials", "true")
-		writer.Header().Set("Access-Control-Allow-Methods", "GET, PUT, POST, HEAD, TRACE, DELETE, PATCH, COPY, HEAD, LINK, OPTIONS")
+		origin := request.Header.Get("Origin")
+		if origin != "" {
+			writer.Header().Set("Access-Control-Allow-Origin", origin)
+			writer.Header().Set("Access-Control-Allow-Credentials", "true")
+			writer.Header().Set("Access-Control-Allow-Methods", "GET, PUT, POST, HEAD, TRACE, DELETE, PATCH, COPY, HEAD, LINK, OPTIONS")
+		} else {
+			writer.Header().Set("Access-Control-Allow-Origin", "*")
+			writer.Header().Set("Access-Control-Allow-Methods", "GET, PUT, POST, HEAD, TRACE, DELETE, PATCH, COPY, HEAD, LINK, OPTIONS")
+		}
 	}
-	// Set status
-	writer.WriteHeader(res.StatusCode)
-	// Copy body
-	_, err := io.Copy(writer, res.Body)
-	if err != nil {
-		return err
-	}
-	return nil
 }

@@ -2,7 +2,9 @@
 PRG = gisproxy
 
 build:
+	@echo build
 	@go install
 
 run: build
-	$$GOPATH/bin/$(PRG)
+	@echo run
+	$$GOPATH/bin/$(PRG) -listen localhost:8181
