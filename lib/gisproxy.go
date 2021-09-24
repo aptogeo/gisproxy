@@ -195,8 +195,25 @@ func (gp *GisProxy) serveHTTP(writer http.ResponseWriter, incomingRequest *http.
 		// Set GisInfo to context
 		ctx = context.WithValue(ctx, contextKey("GisInfo"), gp.extractInfo(incomingRequest, forwardUrl))
 		response, err := gp.sendRequestWithContext(ctx, writer, incomingRequest.Method, forwardUrl, incomingRequest.Body, incomingRequest.Header)
-		if response != nil && response.Body != nil {
-			defer response.Body.Close()
+		if response != nil {
+			if response.Body != nil {
+				defer response.Body.Close()
+			}
+		} else {
+			response = &http.Response{
+				Request: incomingRequest,
+			}
+		}
+		if gp.afterReceiveFunc != nil {
+			// Call after receive function
+			if err := gp.afterReceiveFunc(writer, response); err != nil {
+				statusError, valid := err.(*StatusError)
+				if !valid || statusError.Code != 302 {
+					log.Println("After receive error", err, incomingRequest.URL)
+				}
+				gp.writeError(writer, incomingRequest, err)
+				return
+			}
 		}
 		if err != nil {
 			gp.writeError(writer, incomingRequest, err)
@@ -335,17 +352,6 @@ func (gp *GisProxy) sendRequestWithContext(ctx context.Context, writer http.Resp
 
 // writeResponse writes response
 func (gp *GisProxy) writeResponse(writer http.ResponseWriter, request *http.Request, response *http.Response) {
-	if gp.afterReceiveFunc != nil {
-		// Call after receive function
-		if err := gp.afterReceiveFunc(writer, response); err != nil {
-			statusError, valid := err.(*StatusError)
-			if !valid || statusError.Code != 302 {
-				log.Println("After receive error", err, request.URL)
-			}
-			gp.writeError(writer, request, err)
-			return
-		}
-	}
 	if response.StatusCode == 302 {
 		location, _ := response.Location()
 		gp.writeError(writer, request, NewStatusError(location.String(), 302))
