@@ -98,8 +98,10 @@ func (gi *GisInfo) String() string {
 // NewGisProxy constructs GisProxy
 func NewGisProxy(listen string, prefix string, allowCrossOrigin bool) *GisProxy {
 	gp := new(GisProxy)
-	gp.serverMux = http.NewServeMux()
-	gp.server = &http.Server{Addr: listen, Handler: gp.serverMux}
+	if listen != "" {
+		gp.serverMux = http.NewServeMux()
+		gp.server = &http.Server{Addr: listen, Handler: gp.serverMux}
+	}
 	gp.Prefix = prefix
 	gp.AllowCrossOrigin = allowCrossOrigin
 	gp.https = false
@@ -133,21 +135,24 @@ func (gp *GisProxy) UseHttps(crtfile string, keyfile string) {
 	gp.keyfile = keyfile
 }
 
-func (rp *GisProxy) Start() error {
+func (gp *GisProxy) Start() error {
 	log.Println("Start server")
-	log.Println("Listen=", rp.server.Addr)
-	log.Println("Prefix=", rp.Prefix)
-	log.Println("AllowCrossOrigin=", rp.AllowCrossOrigin)
-	log.Println("https=", rp.https)
-	if rp.https {
-		log.Println("crtfile=", rp.crtfile)
-		log.Println("keyfile=", rp.keyfile)
+	log.Println("Listen=", gp.server.Addr)
+	log.Println("Prefix=", gp.Prefix)
+	log.Println("AllowCrossOrigin=", gp.AllowCrossOrigin)
+	log.Println("https=", gp.https)
+	if gp.https {
+		log.Println("crtfile=", gp.crtfile)
+		log.Println("keyfile=", gp.keyfile)
 	}
-	rp.serverMux.HandleFunc("/", rp.serveHTTP)
-	if rp.https {
-		rp.server.ListenAndServeTLS(rp.crtfile, rp.keyfile)
+	if gp.serverMux == nil || gp.server == nil {
+		return errors.New("no server mux or server defined")
 	}
-	return rp.server.ListenAndServe()
+	gp.serverMux.HandleFunc("/", gp.serveHTTP)
+	if gp.https {
+		gp.server.ListenAndServeTLS(gp.crtfile, gp.keyfile)
+	}
+	return gp.server.ListenAndServe()
 }
 
 func (gp *GisProxy) Stop(timeout time.Duration) error {
@@ -194,7 +199,7 @@ func (gp *GisProxy) serveHTTP(writer http.ResponseWriter, incomingRequest *http.
 		ctx := context.WithValue(incomingRequest.Context(), contextKey("GisProxy"), gp)
 		// Set GisInfo to context
 		ctx = context.WithValue(ctx, contextKey("GisInfo"), gp.extractInfo(incomingRequest, forwardUrl))
-		response, err := gp.sendRequestWithContext(ctx, writer, incomingRequest.Method, forwardUrl, incomingRequest.Body, incomingRequest.Header)
+		response, err := gp.SendRequestWithContext(ctx, writer, incomingRequest.Method, forwardUrl, incomingRequest.Body, incomingRequest.Header)
 		if response != nil {
 			if response.Body != nil {
 				defer response.Body.Close()
@@ -232,7 +237,7 @@ func (gp *GisProxy) ComputeForwardUrl(incomingRequest *http.Request) (*url.URL, 
 	}
 	re := regexp.MustCompile("(" + gp.Prefix + ")([^/\\?]+)([/\\?]?.*)?")
 	submatch := re.FindStringSubmatch(incomingRequestURL)
-	if submatch != nil && submatch[2] != "" {
+	if len(submatch) >= 4 {
 		// replace '%2B' by '+', '%2F' by '/' and '%3D' by '='
 		b64URL := strings.ReplaceAll(submatch[2], "%2B", "+")
 		b64URL = strings.ReplaceAll(b64URL, "%2F", "/")
@@ -316,7 +321,7 @@ func (gp *GisProxy) extractInfo(request *http.Request, forwardUrl *url.URL) *Gis
 }
 
 // SendRequestWithContext sends request with context
-func (gp *GisProxy) sendRequestWithContext(ctx context.Context, writer http.ResponseWriter, method string, url *url.URL, body io.Reader, header http.Header) (*http.Response, error) {
+func (gp *GisProxy) SendRequestWithContext(ctx context.Context, writer http.ResponseWriter, method string, url *url.URL, body io.Reader, header http.Header) (*http.Response, error) {
 	// Create request
 	var request *http.Request
 	var err error
