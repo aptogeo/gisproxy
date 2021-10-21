@@ -148,7 +148,7 @@ func (gp *GisProxy) Start() error {
 	if gp.serverMux == nil || gp.server == nil {
 		return errors.New("no server mux or server defined")
 	}
-	gp.serverMux.HandleFunc("/", gp.serveHTTP)
+	gp.serverMux.HandleFunc("/", gp.ServeHTTP)
 	if gp.https {
 		gp.server.ListenAndServeTLS(gp.crtfile, gp.keyfile)
 	}
@@ -176,8 +176,8 @@ func (gp *GisProxy) SetAfterReceiveFunc(afterReceiveFunc AfterReceive) {
 	gp.afterReceiveFunc = afterReceiveFunc
 }
 
-// serveHTTP serves rest request
-func (gp *GisProxy) serveHTTP(writer http.ResponseWriter, incomingRequest *http.Request) {
+// ServeHTTP serves rest request
+func (gp *GisProxy) ServeHTTP(writer http.ResponseWriter, incomingRequest *http.Request) {
 	if gp.Prefix == "" {
 		gp.Prefix = "/"
 	}
